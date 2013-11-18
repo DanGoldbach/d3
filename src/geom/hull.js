@@ -3,10 +3,12 @@ import "geom";
 import "point";
 
 /**
- * Computes the 2D convex hull of a set of points using Graham's scanning
- * algorithm. The algorithm has been implemented as described in Cormen,
- * Leiserson, and Rivest's Introduction to Algorithms. The running time of
- * this algorithm is O(n log n), where n is the number of input points.
+ * Computes the 2D convex hull of a set of points using the monotone chain
+ * algorithm:
+ * http://en.wikibooks.org/wiki/Algorithm_Implementation/Geometry/Convex_hull/Monotone_chain)
+ *
+ * The runtime of this algorithm is O(n log n), where n is the number of input
+ * points. However in practice it outperforms other O(n log n) hulls.
  *
  * @param vertices [[x1, y1], [x2, y2], …]
  * @returns polygon [[x1, y1], [x2, y2], …]
@@ -25,35 +27,31 @@ d3.geom.hull = function(vertices) {
         fy = d3_functor(y),
         n = data.length;
 
-    for (i = 0, all_points = []; i < n; ++i) {
-      all_points.push([+fx.call(this, d = data[i], i), +fy.call(this, d, i)]);
+    for (i = 0, points = []; i < n; ++i) {
+      points.push([+fx.call(this, d = data[i], i), +fy.call(this, d, i), i]);
     }
 
     // sort ascending by x-coord first, y-coord second
-    all_points.sort();
+    points.sort(function(a, b) {
+      return (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) ? -1 : 1;
+    });
 
-    // find the topmost and bottommost point for each x-coord, respectively.
-    // we flip bottommost points across y axis so we can use the upper hull
-    // routine on both
-    var upper_points = [],
-        lower_points = [];
-    for (var i = 0; i < n; i++) {
-      if (i === 0 || (i > 0 && all_points[i][0] != all_points[i-1][0]))
-        upper_points.push(all_points[i]);
-      if (i === n-1 || (i < n && all_points[i][0] != all_points[i+1][0]))
-        lower_points.push([all_points[i][0], -all_points[i][1]]);
-    }
+    // we flip bottommost points across y axis so we can use the upper hull  routine on both
+    var flipped_points = [];
+    for (var i = 0; i < n; i++) flipped_points.push([points[i][0], -points[i][1]]);
 
-    // get the complete hull with points sorted in ccw order
-    var upper_hull = d3_geom_hull_find_upper_hull(upper_points);
-    var lower_hull = d3_geom_hull_find_upper_hull(lower_points);
-    var hull = []
-    for (var i = 0; i < lower_hull.length ; i++)
-      hull.push([lower_hull[i][0], -lower_hull[i][1]]);  // undo y axis flip
-    for (var i = upper_hull.length - 1; i >= 0 ; i--)
-      hull.push(upper_hull[i]);
+    var uhull = d3_geom_hull_find_upper_hull(points);
+    var lhull = d3_geom_hull_find_upper_hull(flipped_points);
 
-    return hull;
+    // construct the poly, removing possible duplicate endpoints
+    var skip_l = (lhull[0] === uhull[0]),
+        skip_r  = (lhull[lhull.length - 1] === uhull[uhull.length - 1]),
+        poly = [];
+    for (var i=uhull.length - 1; i >= 0; i--)
+      poly.push(data[points[uhull[i]][2]]);
+    for (var i = +skip_l; i < lhull.length - skip_r; i++)
+      poly.push(data[points[lhull[i]][2]]);
+    return poly;
   }
 
   hull.x = function(_) {
@@ -69,17 +67,17 @@ d3.geom.hull = function(vertices) {
 
 // finds the 'upper convex hull' (see wiki link above)
 // assumes points arg has >=3 elements, is sorted by x, unique in y
-// returns [[x1, y1], ...] hull points in left to right order
+// returns array of indices into points in left to right order
 function d3_geom_hull_find_upper_hull(points) {
   var n = points.length,
-      hull = [points[0], points[1]],
+      hull = [0, 1],
       hs = 2;  // hull size
 
   for (var i = 2; i < n; i++) {
-    while (hs > 1 && !d3_geom_hull_CW(hull[hs-2], hull[hs-1], points[i])) {
+    while (hs > 1 && !d3_geom_hull_CW(points[hull[hs-2]], points[hull[hs-1]], points[i])) {
       hs --;
     }
-    hull[hs++] = points[i];
+    hull[hs++] = i;
   }
   // we slice to make sure that the points we 'popped' from hull don't stay behind
   return hull.slice(0, hs);
