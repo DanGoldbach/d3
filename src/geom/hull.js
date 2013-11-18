@@ -18,86 +18,42 @@ d3.geom.hull = function(vertices) {
   if (arguments.length) return hull(vertices);
 
   function hull(data) {
+    // Hull of < 3 points is not well-defined
     if (data.length < 3) return [];
 
     var fx = d3_functor(x),
         fy = d3_functor(y),
-        n = data.length,
-        vertices, // TODO use parallel arrays
-        plen = n - 1,
-        points = [],
-        stack = [],
-        d,
-        i, j, h = 0, x1, y1, x2, y2, u, v, a, sp;
+        n = data.length;
 
-    if (fx === d3_geom_pointX && y === d3_geom_pointY) vertices = data;
-    else for (i = 0, vertices = []; i < n; ++i) {
-      vertices.push([+fx.call(this, d = data[i], i), +fy.call(this, d, i)]);
+    for (i = 0, all_points = []; i < n; ++i) {
+      all_points.push([+fx.call(this, d = data[i], i), +fy.call(this, d, i)]);
     }
 
-    // find the starting ref point: leftmost point with the minimum y coord
-    for (i = 1; i < n; ++i) {
-      if (vertices[i][1] < vertices[h][1]
-          || vertices[i][1] == vertices[h][1]
-          && vertices[i][0] < vertices[h][0]) h = i;
+    // sort ascending by x-coord first, y-coord second
+    all_points.sort();
+
+    // find the topmost and bottommost point for each x-coord, respectively.
+    // we flip bottommost points across y axis so we can use the upper hull
+    // routine on both
+    var upper_points = [],
+        lower_points = [];
+    for (var i = 0; i < n; i++) {
+      if (i === 0 || (i > 0 && all_points[i][0] != all_points[i-1][0]))
+        upper_points.push(all_points[i]);
+      if (i === n-1 || (i < n && all_points[i][0] != all_points[i+1][0]))
+        lower_points.push([all_points[i][0], -all_points[i][1]]);
     }
 
-    // calculate polar angles from ref point and sort
-    for (i = 0; i < n; ++i) {
-      if (i === h) continue;
-      y1 = vertices[i][1] - vertices[h][1];
-      x1 = vertices[i][0] - vertices[h][0];
-      points.push({angle: Math.atan2(y1, x1), index: i});
-    }
-    points.sort(function(a, b) { return a.angle - b.angle; });
+    // get the complete hull with points sorted in ccw order
+    var upper_hull = d3_geom_hull_find_upper_hull(upper_points);
+    var lower_hull = d3_geom_hull_find_upper_hull(lower_points);
+    var hull = []
+    for (var i = 0; i < lower_hull.length ; i++)
+      hull.push([lower_hull[i][0], -lower_hull[i][1]]);  // undo y axis flip
+    for (var i = upper_hull.length - 1; i >= 0 ; i--)
+      hull.push(upper_hull[i]);
 
-    // toss out duplicate angles
-    a = points[0].angle;
-    v = points[0].index;
-    u = 0;
-    for (i = 1; i < plen; ++i) {
-      j = points[i].index;
-      if (a == points[i].angle) {
-        // keep angle for point most distant from the reference
-        x1 = vertices[v][0] - vertices[h][0];
-        y1 = vertices[v][1] - vertices[h][1];
-        x2 = vertices[j][0] - vertices[h][0];
-        y2 = vertices[j][1] - vertices[h][1];
-        if (x1 * x1 + y1 * y1 >= x2 * x2 + y2 * y2) {
-          points[i].index = -1;
-          continue;
-        } else {
-          points[u].index = -1;
-        }
-      }
-      a = points[i].angle;
-      u = i;
-      v = j;
-    }
-
-    // initialize the stack
-    stack.push(h);
-    for (i = 0, j = 0; i < 2; ++j) {
-      if (points[j].index > -1) {
-        stack.push(points[j].index);
-        i++;
-      }
-    }
-    sp = stack.length;
-
-    // do graham's scan
-    for (; j < plen; ++j) {
-      if (points[j].index < 0) continue; // skip tossed out points
-      while (!d3_geom_hullCCW(stack[sp - 2], stack[sp - 1], points[j].index, vertices)) {
-        --sp;
-      }
-      stack[sp++] = points[j].index;
-    }
-
-    // construct the hull
-    var poly = [];
-    for (i = sp - 1; i >= 0; --i) poly.push(data[stack[i]]);
-    return poly;
+    return hull;
   }
 
   hull.x = function(_) {
@@ -111,11 +67,26 @@ d3.geom.hull = function(vertices) {
   return hull;
 };
 
-// are three points in counter-clockwise order?
-function d3_geom_hullCCW(i1, i2, i3, v) {
-  var t, a, b, c, d, e, f;
-  t = v[i1]; a = t[0]; b = t[1];
-  t = v[i2]; c = t[0]; d = t[1];
-  t = v[i3]; e = t[0]; f = t[1];
-  return (f - b) * (c - a) - (d - b) * (e - a) > 0;
+// finds the 'upper convex hull' (see wiki link above)
+// assumes points arg has >=3 elements, is sorted by x, unique in y
+// returns [[x1, y1], ...] hull points in left to right order
+function d3_geom_hull_find_upper_hull(points) {
+  var n = points.length,
+      hull = [points[0], points[1]],
+      hs = 2;  // hull size
+
+  for (var i = 2; i < n; i++) {
+    while (hs > 1 && !d3_geom_hull_CW(hull[hs-2], hull[hs-1], points[i])) {
+      hs --;
+    }
+    hull[hs++] = points[i];
+  }
+  // we slice to make sure that the points we 'popped' from hull don't stay behind
+  return hull.slice(0, hs);
+}
+
+// are three points a, b, c in clockwise order?
+// i.e. is the sign of (b-a)x(c-a) positive?
+function d3_geom_hull_CW(a, b, c) {
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0;
 }
